@@ -12,7 +12,7 @@ if [ -e "$TARGET" ]; then
 fi
 
 mkdir -p "$TARGET"
-for path in SKILL.md README.md LICENSE aliases references scripts; do
+for path in SKILL.md README.md LICENSE .gitignore .github aliases references scripts tests; do
   cp -R "$SOURCE_DIR/$path" "$TARGET/"
 done
 find "$TARGET" -type d -name __pycache__ -prune -exec rm -rf {} +

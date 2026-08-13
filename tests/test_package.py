@@ -36,6 +36,11 @@ class PackageTests(unittest.TestCase):
         self.assertIn("name: grok", alias)
         self.assertIn("skill_view(name='chip-grok')", alias)
 
+    def test_installer_uses_full_directory_package(self) -> None:
+        text = (ROOT / "scripts/install.sh").read_text()
+        for marker in [".gitignore", ".github", "aliases", "references", "scripts", "tests"]:
+            self.assertIn(marker, text)
+
     def test_shell_syntax(self) -> None:
         scripts = sorted((ROOT / "scripts").glob("*.sh"))
         self.assertTrue(scripts)
