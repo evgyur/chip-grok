@@ -29,7 +29,8 @@ class PackageTests(unittest.TestCase):
         self.assertTrue(text.startswith("---\n"))
         self.assertIn("name: chip-grok", text)
         self.assertIn("/grok", text)
-        self.assertIn("isolated worktree", text)
+        self.assertIn("dedicated worktree", text)
+        self.assertIn("not** a filesystem/process security boundary", text)
         self.assertNotIn("api_key = \"sk-", text)
 
         alias = (ROOT / "aliases" / "grok" / "SKILL.md").read_text()

@@ -2,7 +2,7 @@
 name: chip-grok
 description: "Use when delegating a coding task to Grok Build as a reviewed worker. Requires an enforced strict sandbox or explicit trusted-worker acknowledgement, uses an owned git worktree, redacts scoped credentials, and requires independent verification."
 argument-hint: "<coding task; optionally include repo=/absolute/path>"
-version: 1.0.0
+version: 1.1.0
 author: Evgeny "Chip" Yurchenko
 license: MIT
 metadata:
@@ -38,7 +38,7 @@ If the task is missing, return:
    - record branch, HEAD, and `git status --short`;
    - stop if the requested task is ambiguous or the repository is not identifiable;
    - never overwrite or absorb unrelated dirty changes.
-2. Run `scripts/chip_grok.py prepare --repo <repo>` to create a detached isolated worktree under a configurable worktree root.
+2. Run `scripts/chip_grok.py prepare --repo <repo>` to create a dedicated detached worktree under a configurable worktree root and record its ownership token.
 3. Write a bounded task prompt that includes:
    - goal and acceptance criteria;
    - inspect before editing;
@@ -100,7 +100,8 @@ Return:
 status: completed | blocked
 repo: <resolved repo>
 base: <branch + HEAD>
-worktree: <isolated path>
+worktree: <dedicated path>
+run_token: <ownership token>
 model_alias: <non-secret alias>
 changed: <files>
 verification: <commands and real results>
