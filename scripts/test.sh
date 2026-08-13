@@ -13,7 +13,11 @@ if [ -f "$GUARD" ]; then
 else
   printf 'SKILL_WORKFLOW_GUARD_SKIPPED (external Hermes guard not installed)\n'
 fi
-git diff --check
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git diff --check
+else
+  printf 'GIT_DIFF_CHECK_SKIPPED (installed package is not a git checkout)\n'
+fi
 find . -type d -name __pycache__ -prune -exec rm -rf {} +
 find . -type f -name '*.pyc' -delete
 printf 'ALL_TESTS_OK\n'
