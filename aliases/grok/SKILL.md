@@ -8,7 +8,7 @@ license: MIT
 
 # grok compatibility command
 
-Load `chip-grok` with `skill_view(name='chip-grok')`, then follow that skill exactly for the user's instruction.
+Load `chip-grok` with `skill_view(name='chip-grok')`, then follow that skill exactly for the user's instruction. See [canonical workflow](references/canonical-workflow.md).
 
 Do not reinterpret `/grok` as an xAI model switch. It invokes Grok Build as a bounded coding worker through the locally configured provider route.
 
