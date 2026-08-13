@@ -27,7 +27,7 @@ Then reload skills in Hermes:
 /reload-skills
 ```
 
-The canonical command is `/chip-grok`. The installer can also add `/grok` as a quick alias when `hermes` is available.
+The canonical command is `/chip-grok`. The package also installs a small `/grok` compatibility skill that delegates to the same contract.
 
 ## Configure Grok Build
 
@@ -37,6 +37,7 @@ For a model already defined in `~/.grok/config.toml`:
 
 ```bash
 export CHIP_GROK_MODEL=my-coding-model
+export CHIP_GROK_PASSTHROUGH_ENV=MY_GATEWAY_API_KEY
 ```
 
 Or point at a trusted local wrapper that already selects the provider/model:

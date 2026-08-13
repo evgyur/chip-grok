@@ -17,6 +17,7 @@ class PackageTests(unittest.TestCase):
             "scripts/install.sh",
             "scripts/test.sh",
             "scripts/public_hygiene.py",
+            "aliases/grok/SKILL.md",
             "references/portable-setup.md",
             "references/hermes-adapter.md",
         ]
@@ -30,6 +31,10 @@ class PackageTests(unittest.TestCase):
         self.assertIn("/grok", text)
         self.assertIn("isolated worktree", text)
         self.assertNotIn("api_key = \"sk-", text)
+
+        alias = (ROOT / "aliases" / "grok" / "SKILL.md").read_text()
+        self.assertIn("name: grok", alias)
+        self.assertIn("skill_view(name='chip-grok')", alias)
 
     def test_shell_syntax(self) -> None:
         scripts = sorted((ROOT / "scripts").glob("*.sh"))

@@ -18,6 +18,7 @@ import uuid
 
 DEFAULT_MAX_TURNS = 60
 DEFAULT_TIMEOUT = 1800
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class ChipGrokError(RuntimeError):
@@ -105,6 +106,43 @@ def grok_command() -> list[str]:
     return parts
 
 
+def worker_environment() -> dict[str, str]:
+    """Build a minimal child environment plus explicitly scoped provider vars."""
+    baseline = {
+        "HOME",
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TERM",
+        "COLORTERM",
+        "NO_COLOR",
+        "TMPDIR",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+    }
+    requested = {
+        item.strip()
+        for item in os.getenv("CHIP_GROK_PASSTHROUGH_ENV", "").split(",")
+        if item.strip()
+    }
+    invalid = sorted(name for name in requested if not ENV_NAME.fullmatch(name))
+    if invalid:
+        raise ChipGrokError("invalid CHIP_GROK_PASSTHROUGH_ENV variable name")
+    missing = sorted(name for name in requested if name not in os.environ)
+    if missing:
+        raise ChipGrokError(
+            "requested provider environment variable is not set: " + ", ".join(missing)
+        )
+    allowed = baseline | requested
+    return {name: value for name, value in os.environ.items() if name in allowed}
+
+
 def build_prompt(task: str) -> str:
     return f"""You are a bounded coding worker inside an isolated git worktree.
 
@@ -140,9 +178,10 @@ def collect_changed_files(worktree: Path) -> list[str]:
 
 
 def run_worker(repo: Path, task: str, keep: bool) -> dict[str, object]:
+    command = grok_command()
+    child_env = worker_environment()
     receipt = prepare_worktree(repo)
     worktree = Path(str(receipt["worktree"]))
-    command = grok_command()
     model = os.getenv("CHIP_GROK_MODEL", "").strip()
     if model:
         command.extend(["-m", model])
@@ -165,13 +204,28 @@ def run_worker(repo: Path, task: str, keep: bool) -> dict[str, object]:
         ]
     )
     timeout = int(os.getenv("CHIP_GROK_TIMEOUT", str(DEFAULT_TIMEOUT)))
-    result = run_command(
-        command,
-        cwd=worktree,
-        env=os.environ.copy(),
-        timeout=timeout,
-        check=False,
-    )
+    try:
+        result = run_command(
+            command,
+            cwd=worktree,
+            env=child_env,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        receipt.update(
+            {
+                "status": "blocked",
+                "grok_exit_code": None,
+                "model_alias": model or "wrapper/default",
+                "changed_files": collect_changed_files(worktree),
+                "diff_check_ok": False,
+                "worker_result": "",
+                "worker_error": f"Grok timed out after {timeout} seconds",
+                "kept": True,
+            }
+        )
+        return receipt
     receipt.update(
         {
             "status": "completed" if result.returncode == 0 else "blocked",

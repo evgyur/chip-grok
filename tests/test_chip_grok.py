@@ -84,6 +84,38 @@ class ChipGrokTests(unittest.TestCase):
             self.assertFalse((repo / "result.txt").exists())
             self.assertTrue(Path(receipt["worktree"]).joinpath("result.txt").exists())
 
+    def test_worker_environment_passes_only_explicit_provider_variable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self.make_repo(root)
+            fake = root / "fake-grok"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "from pathlib import Path\n"
+                "import json, os\n"
+                "Path('env.json').write_text(json.dumps(dict(os.environ)))\n"
+                "print(json.dumps({'text': 'done'}))\n"
+            )
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+            env = os.environ | {
+                "CHIP_GROK_BIN": str(fake),
+                "CHIP_GROK_WORKTREE_ROOT": str(root / "worktrees"),
+                "CHIP_GROK_PASSTHROUGH_ENV": "SCOPED_TEST_KEY",
+                "SCOPED_TEST_KEY": "scoped-value",
+                "UNRELATED_GATEWAY_SECRET": "must-not-pass",
+            }
+            result = subprocess.run(
+                ["python3", str(SCRIPT), "run", "--repo", str(repo), "--task", "inspect env", "--keep"],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                check=True,
+            )
+            receipt = json.loads(result.stdout)
+            child = json.loads(Path(receipt["worktree"]).joinpath("env.json").read_text())
+            self.assertEqual(child["SCOPED_TEST_KEY"], "scoped-value")
+            self.assertNotIn("UNRELATED_GATEWAY_SECRET", child)
+
     def test_missing_worker_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

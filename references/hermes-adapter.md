@@ -14,13 +14,13 @@ The installer copies the complete package to:
 ${HERMES_HOME:-$HOME/.hermes}/skills/chip-grok
 ```
 
-When Hermes CLI is available, it also creates a quick alias:
+The package includes a compatibility skill:
 
 ```text
-/grok → /chip-grok
+/grok → load and follow /chip-grok
 ```
 
-Then run `/reload-skills` in a live gateway session. A newly written skill file is not proof that the live slash-command cache has reloaded.
+Then run `/reload-skills` in a live gateway session. No gateway config mutation or restart is required. A newly written skill file is not proof that the live slash-command cache has reloaded.
 
 ## Invocation contract
 

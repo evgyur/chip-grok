@@ -71,6 +71,7 @@ Supported environment variables:
 - `CHIP_GROK_WORKTREE_ROOT` — worktree parent; default `$TMPDIR/chip-grok-worktrees`.
 - `CHIP_GROK_MAX_TURNS` — bounded agent turns; default `60`.
 - `CHIP_GROK_TIMEOUT` — process timeout in seconds; default `1800`.
+- `CHIP_GROK_PASSTHROUGH_ENV` — comma-separated names of the scoped provider variables Grok needs. All unrelated parent-process secrets are removed from the worker environment.
 
 Credentials stay in provider-specific environment variables or the local wrapper. Never place them in this repository, prompts, transcripts, or reports.
 
@@ -84,6 +85,7 @@ See [portable setup](references/portable-setup.md) for OpenAI-compatible model c
 - Deny network tools by default when the task does not need them.
 - Never use auto-approval directly in a production checkout.
 - No commits, pushes, PRs, deployments, migrations, secrets, payments, or production mutations by the worker.
+- Pass only a scoped/revocable provider credential through `CHIP_GROK_PASSTHROUGH_ENV`; never expose the supervising gateway's full environment.
 - Treat Grok output as a self-report until files and tests are verified independently.
 - Public distributions must not include private endpoints, model-account names, chat IDs, hosts, local absolute paths, or credentials.
 

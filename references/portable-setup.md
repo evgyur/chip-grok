@@ -24,6 +24,7 @@ Keep the bearer value in the named environment variable:
 ```bash
 export MY_GATEWAY_API_KEY="..."
 export CHIP_GROK_MODEL="my-coding-model"
+export CHIP_GROK_PASSTHROUGH_ENV="MY_GATEWAY_API_KEY"
 ```
 
 Run a harmless model smoke before coding:
@@ -45,7 +46,9 @@ If a local wrapper selects the model and loads provider environment safely:
 export CHIP_GROK_BIN="$HOME/.local/bin/grok-my-provider"
 ```
 
-The wrapper path is local operator configuration. Do not commit it to a public repository.
+The wrapper path is local operator configuration. Do not commit it to a public repository. If the wrapper needs a scoped credential from its parent process, name only that variable in `CHIP_GROK_PASSTHROUGH_ENV`.
+
+The runner starts Grok with a minimal environment. Unrelated gateway/provider secrets are not inherited. A provider variable is passed only when its name appears in `CHIP_GROK_PASSTHROUGH_ENV`; missing requested variables fail closed.
 
 ## Sandbox note
 
