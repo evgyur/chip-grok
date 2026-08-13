@@ -1,6 +1,6 @@
 ---
 name: chip-grok
-description: "Use when delegating a coding task to Grok Build as a bounded worker. Runs Grok in an isolated git worktree, keeps provider credentials outside the skill, and requires independent diff/test verification before applying changes."
+description: "Use when delegating a coding task to Grok Build as a reviewed worker. Requires an enforced strict sandbox or explicit trusted-worker acknowledgement, uses an owned git worktree, redacts scoped credentials, and requires independent verification."
 argument-hint: "<coding task; optionally include repo=/absolute/path>"
 version: 1.0.0
 author: Evgeny "Chip" Yurchenko
@@ -13,7 +13,7 @@ metadata:
 
 # chip-grok
 
-Delegate one coding task to Grok Build without turning it into an unmanaged writer.
+Delegate one coding task to Grok Build without confusing worktree separation with process isolation.
 
 ## Trigger
 
@@ -46,7 +46,9 @@ If the task is missing, return:
    - preserve existing behavior and user changes;
    - run focused tests;
    - no commit, push, deployment, credential access, external publication, or destructive action.
-4. Run `scripts/chip_grok.py run --repo <repo> --task <task>` or invoke the configured Grok wrapper in the prepared worktree.
+4. Run with one explicit boundary:
+   - `scripts/chip_grok.py run --repo <repo> --task <task> --sandbox-profile strict`; or
+   - `scripts/chip_grok.py run --repo <repo> --task <task> --trusted-worker` only when the operator explicitly trusts Grok with every file available to the current Unix user.
 5. Independently inspect the result:
    - `git status --short`;
    - `git diff --check`;
@@ -54,7 +56,7 @@ If the task is missing, return:
    - focused tests selected from repository instructions and the task;
    - secret/private-marker scan over changed and untracked files.
 6. Apply or copy changes back only after verification. The worker never owns merge, commit, push, release, or production effects.
-7. Clean up the temporary worktree after preserving any needed patch/evidence.
+7. Clean up with the exact `run_token`. Dirty cleanup requires explicit `--discard` after preserving or rejecting the diff.
 
 ## Runtime configuration
 
@@ -80,12 +82,13 @@ See [portable setup](references/portable-setup.md) for OpenAI-compatible model c
 ## Safety boundaries
 
 - One Grok writer per worktree.
-- Worktree isolation is mandatory for edits.
-- Grok's own sandbox is defense-in-depth only; do not claim isolation unless the host proves it works.
+- A dedicated worktree is mandatory for edits, but it is **not** a filesystem/process security boundary.
+- Fail closed unless Grok's `strict` sandbox initializes successfully or `--trusted-worker` explicitly acknowledges full same-user host access.
 - Deny network tools by default when the task does not need them.
 - Never use auto-approval directly in a production checkout.
 - No commits, pushes, PRs, deployments, migrations, secrets, payments, or production mutations by the worker.
-- Pass only a scoped/revocable provider credential through `CHIP_GROK_PASSTHROUGH_ENV`; never expose the supervising gateway's full environment.
+- Pass only a scoped/revocable provider credential through `CHIP_GROK_PASSTHROUGH_ENV`; never expose the supervising gateway's full environment. Redact it from stdout/stderr and block if it appears in changed files.
+- Cleanup requires a matching ownership receipt and run token. Refuse dirty worktrees unless `--discard` is explicit.
 - Treat Grok output as a self-report until files and tests are verified independently.
 - Public distributions must not include private endpoints, model-account names, chat IDs, hosts, local absolute paths, or credentials.
 
@@ -108,7 +111,9 @@ next_effect: <apply/commit/push withheld or explicitly approved>
 ## Quick Test Checklist
 
 - `python3 scripts/chip_grok.py prepare --repo <throwaway-repo>` returns a detached worktree at the exact base HEAD.
-- A fake worker can create a file only inside that worktree; the source checkout stays unchanged.
+- A cooperative fake worker creates a file inside the worktree; an adversarial source-escape attempt is detected and blocks the receipt.
+- Unsandboxed execution without `--trusted-worker` fails closed.
+- Scoped credentials are redacted from output and detected in changed files.
 - A missing Grok executable fails with `status: blocked`.
 - Cleanup refuses paths outside `CHIP_GROK_WORKTREE_ROOT`.
 - `python3 scripts/public_hygiene.py` reports `PUBLIC_HYGIENE_OK`.
@@ -118,7 +123,7 @@ next_effect: <apply/commit/push withheld or explicitly approved>
 
 - Exact repository and base commit are recorded.
 - Grok ran through the configured local provider route.
-- Edits happened only in the isolated worktree.
+- Source checkout state did not change during the run; any detected source mutation blocks completion.
 - Diff and focused tests were independently verified.
-- No credential or private runtime material entered the worktree or report.
+- No scoped credential entered the public receipt or changed files.
 - No public/production effect occurred without separate approval.

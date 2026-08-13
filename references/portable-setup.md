@@ -38,6 +38,17 @@ grok -m "$CHIP_GROK_MODEL" \
   --tools ""
 ```
 
+For normal chip-grok execution, prefer:
+
+```bash
+python3 scripts/chip_grok.py run \
+  --repo /path/to/repo \
+  --task "Implement the change and run focused tests" \
+  --sandbox-profile strict
+```
+
+If the host cannot initialize Grok's strict sandbox, the runner fails closed. `--trusted-worker` is an explicit acknowledgement that the Grok process has the same filesystem visibility as the current Unix user; use it only for a fully trusted worker on a controlled host.
+
 ## Trusted wrapper
 
 If a local wrapper selects the model and loads provider environment safely:
@@ -52,4 +63,6 @@ The runner starts Grok with a minimal environment. Unrelated gateway/provider se
 
 ## Sandbox note
 
-Try Grok's `--sandbox workspace` separately. If it fails with bubblewrap/user-namespace errors, do not claim it is active. `chip-grok` still isolates edits in a dedicated git worktree and restricts the worker prompt, but that is not a kernel security boundary.
+Use Grok's `--sandbox strict`, not `workspace`, when you need enforced repository-scoped filesystem access. If strict mode fails with bubblewrap/user-namespace errors, do not claim sandboxing and do not silently continue. Either repair the host sandbox or make the full-trust decision explicit with `--trusted-worker`.
+
+The worktree is only a change-management boundary. A trusted same-user process can follow Git metadata back to the source checkout or read other user files.

@@ -1,13 +1,13 @@
 # chip-grok
 
-A public-safe Hermes skill for delegating coding tasks to **Grok Build** as a bounded worker.
+A public-safe Hermes skill for delegating coding tasks to **Grok Build** as a reviewed worker with explicit trust boundaries.
 
 It keeps the useful part of Grok Build—repository tools, agent loop, and coding UI—while keeping merge and release authority in the supervising agent.
 
 ## What it does
 
 - resolves an exact Git repository;
-- creates an isolated detached worktree;
+- creates a dedicated detached worktree with an ownership receipt;
 - runs Grok Build with a locally configured model alias;
 - forbids commit, push, deploy, secrets, and production effects in the worker prompt;
 - captures the result as JSON;
@@ -53,14 +53,22 @@ See [`references/portable-setup.md`](references/portable-setup.md).
 ```bash
 python3 scripts/chip_grok.py run \
   --repo /path/to/repository \
-  --task "Fix the parser bug and run focused tests"
+  --task "Fix the parser bug and run focused tests" \
+  --sandbox-profile strict
 ```
 
 The command prints a machine-readable JSON receipt. It does **not** apply, commit, or push changes.
 
 ## Safety model
 
-The isolated worktree is the primary boundary. Grok's optional OS sandbox is defense-in-depth because some server environments disable user namespaces.
+The runner fails closed unless either:
+
+- `--sandbox-profile strict` requests Grok's enforced filesystem/process sandbox; or
+- `--trusted-worker` explicitly acknowledges that Grok can access anything available to the current Unix user.
+
+A worktree isolates **changes**, not host filesystem access. Never describe a trusted-worker run as sandboxed.
+
+Scoped provider values are removed from receipts and scanned in changed files. Cleanup requires the exact run token and refuses dirty worktrees unless `--discard` is explicit.
 
 The supervising agent must inspect the diff and rerun tests before accepting changes.
 

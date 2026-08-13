@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Grok Build as a bounded coding worker in an isolated git worktree."""
+"""Run Grok Build as a reviewed coding worker in a dedicated git worktree."""
 
 from __future__ import annotations
 
@@ -18,7 +18,9 @@ import uuid
 
 DEFAULT_MAX_TURNS = 60
 DEFAULT_TIMEOUT = 1800
+MAX_RECEIPT_TEXT = 200_000
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+TOKEN_NAME = re.compile(r"^chip-grok-[0-9]+-[a-f0-9]{8}$")
 
 
 class ChipGrokError(RuntimeError):
@@ -54,43 +56,107 @@ def resolve_repo(raw: str) -> Path:
     if not repo.is_dir():
         raise ChipGrokError("repository path does not exist or is not a directory")
     root = run_command(["git", "rev-parse", "--show-toplevel"], cwd=repo).stdout.strip()
-    resolved = Path(root).resolve()
-    if resolved != repo:
-        repo = resolved
-    return repo
+    return Path(root).resolve()
 
 
 def git_text(repo: Path, *args: str) -> str:
     return run_command(["git", *args], cwd=repo).stdout.strip()
 
 
+def git_status_raw(repo: Path) -> str:
+    return run_command(["git", "status", "--porcelain=v1", "-z"], cwd=repo).stdout
+
+
+def status_paths(raw: str) -> list[str]:
+    """Parse porcelain-v1 -z output, including rename/copy two-path records."""
+    entries = raw.split("\0")
+    paths: list[str] = []
+    index = 0
+    while index < len(entries):
+        item = entries[index]
+        if not item:
+            index += 1
+            continue
+        status = item[:2]
+        path = item[3:] if len(item) >= 4 else item
+        paths.append(path)
+        if "R" in status or "C" in status:
+            # With -z, the current path is in the status record and the
+            # original path follows as the next NUL-delimited field.
+            index += 1
+        index += 1
+    return sorted(set(paths))
+
+
 def worktree_root() -> Path:
     configured = os.getenv("CHIP_GROK_WORKTREE_ROOT", "").strip()
-    if configured:
-        root = Path(configured).expanduser().resolve()
-    else:
-        root = Path(tempfile.gettempdir()) / "chip-grok-worktrees"
+    root = Path(configured).expanduser().resolve() if configured else Path(tempfile.gettempdir()) / "chip-grok-worktrees"
     root.mkdir(parents=True, exist_ok=True)
+    root.chmod(0o700)
     return root
+
+
+def ownership_root() -> Path:
+    root = worktree_root() / ".ownership"
+    root.mkdir(parents=True, exist_ok=True)
+    root.chmod(0o700)
+    return root
+
+
+def manifest_path(token: str) -> Path:
+    if not TOKEN_NAME.fullmatch(token):
+        raise ChipGrokError("invalid chip-grok run token")
+    return ownership_root() / f"{token}.json"
+
+
+def write_manifest(payload: dict[str, object]) -> None:
+    path = manifest_path(str(payload["run_token"]))
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n")
+    path.chmod(0o600)
+
+
+def load_manifest(repo: Path, worktree: Path, token: str) -> dict[str, object]:
+    path = manifest_path(token)
+    if not path.is_file():
+        raise ChipGrokError("ownership receipt not found; refusing cleanup")
+    try:
+        payload = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ChipGrokError("ownership receipt is invalid; refusing cleanup") from exc
+    expected = {
+        "format": 1,
+        "run_token": token,
+        "repo": str(repo.resolve()),
+        "worktree": str(worktree.resolve()),
+    }
+    for key, value in expected.items():
+        if payload.get(key) != value:
+            raise ChipGrokError("ownership receipt mismatch; refusing cleanup")
+    return payload
 
 
 def prepare_worktree(repo: Path) -> dict[str, object]:
     head = git_text(repo, "rev-parse", "HEAD")
     branch = git_text(repo, "branch", "--show-current") or "DETACHED"
-    status = git_text(repo, "status", "--short")
+    source_status = git_status_raw(repo)
     token = f"chip-grok-{int(time.time())}-{uuid.uuid4().hex[:8]}"
     destination = worktree_root() / token
-    run_command(
-        ["git", "worktree", "add", "--detach", str(destination), head],
-        cwd=repo,
-    )
-    return {
+    run_command(["git", "worktree", "add", "--detach", str(destination), head], cwd=repo)
+    manifest = {
+        "format": 1,
+        "run_token": token,
         "repo": str(repo),
-        "base_head": head,
-        "base_branch": branch,
-        "source_dirty": bool(status),
-        "source_status": status.splitlines() if status else [],
         "worktree": str(destination),
+        "base_head": head,
+        "created_at": int(time.time()),
+    }
+    write_manifest(manifest)
+    return {
+        **manifest,
+        "base_branch": branch,
+        "source_dirty": bool(source_status),
+        "source_status": status_paths(source_status),
+        "source_status_raw": source_status,
     }
 
 
@@ -106,25 +172,12 @@ def grok_command() -> list[str]:
     return parts
 
 
-def worker_environment() -> dict[str, str]:
+def worker_environment() -> tuple[dict[str, str], list[str]]:
     """Build a minimal child environment plus explicitly scoped provider vars."""
     baseline = {
-        "HOME",
-        "PATH",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "TERM",
-        "COLORTERM",
-        "NO_COLOR",
-        "TMPDIR",
-        "XDG_CONFIG_HOME",
-        "XDG_CACHE_HOME",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "NO_PROXY",
+        "HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM",
+        "NO_COLOR", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+        "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
     }
     requested = {
         item.strip()
@@ -136,15 +189,36 @@ def worker_environment() -> dict[str, str]:
         raise ChipGrokError("invalid CHIP_GROK_PASSTHROUGH_ENV variable name")
     missing = sorted(name for name in requested if name not in os.environ)
     if missing:
-        raise ChipGrokError(
-            "requested provider environment variable is not set: " + ", ".join(missing)
-        )
+        raise ChipGrokError("requested provider environment variable is not set: " + ", ".join(missing))
     allowed = baseline | requested
-    return {name: value for name, value in os.environ.items() if name in allowed}
+    child = {name: value for name, value in os.environ.items() if name in allowed}
+    secrets = [os.environ[name] for name in sorted(requested) if os.environ[name]]
+    return child, secrets
 
 
-def build_prompt(task: str) -> str:
-    return f"""You are a bounded coding worker inside an isolated git worktree.
+def redact_text(text: str, secrets: list[str]) -> str:
+    redacted = text
+    for value in sorted(set(secrets), key=len, reverse=True):
+        redacted = redacted.replace(value, "[REDACTED_SCOPED_CREDENTIAL]")
+    # Defense in depth for common bearer output even when a wrapper obtained it
+    # without direct environment passthrough.
+    redacted = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s\"']+", r"\1[REDACTED]", redacted)
+    if len(redacted) > MAX_RECEIPT_TEXT:
+        redacted = redacted[:MAX_RECEIPT_TEXT] + "\n[TRUNCATED]"
+    return redacted
+
+
+def build_prompt(task: str, trusted: bool) -> str:
+    trust_note = (
+        "This process is explicitly operator-trusted and is not filesystem-sandboxed. "
+        "The worktree separates changes, not host file access."
+        if trusted
+        else "An enforced Grok strict sandbox was requested; stop if it cannot initialize."
+    )
+    return f"""You are a reviewed coding worker in a dedicated git worktree.
+
+Runtime boundary:
+{trust_note}
 
 Task:
 {task.strip()}
@@ -162,114 +236,143 @@ Contract:
 
 
 def collect_changed_files(worktree: Path) -> list[str]:
-    result = run_command(
-        ["git", "status", "--porcelain=v1", "-z"],
-        cwd=worktree,
-    ).stdout
-    changed: list[str] = []
-    for item in result.split("\0"):
-        if not item:
+    return status_paths(git_status_raw(worktree))
+
+
+def secret_leak_files(worktree: Path, changed_files: list[str], secrets: list[str]) -> list[str]:
+    secret_bytes = [value.encode() for value in secrets if value]
+    if not secret_bytes:
+        return []
+    leaks: list[str] = []
+    root = worktree.resolve()
+    for relative in changed_files:
+        path = (root / relative).resolve()
+        if root not in path.parents or not path.is_file():
             continue
-        path = item[3:] if len(item) >= 4 else item
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1]
-        changed.append(path)
-    return sorted(set(changed))
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if any(value in data for value in secret_bytes):
+            leaks.append(relative)
+    return sorted(set(leaks))
 
 
-def run_worker(repo: Path, task: str, keep: bool) -> dict[str, object]:
+def run_worker(
+    repo: Path,
+    task: str,
+    keep: bool,
+    *,
+    trusted_worker: bool,
+    sandbox_profile: str | None,
+) -> dict[str, object]:
+    if not trusted_worker and sandbox_profile != "strict":
+        raise ChipGrokError(
+            "refusing unsandboxed worker: pass --sandbox-profile strict, or explicitly acknowledge a fully trusted process with --trusted-worker"
+        )
     command = grok_command()
-    child_env = worker_environment()
+    if sandbox_profile == "strict":
+        if len(command) != 1 or Path(command[0]).name not in {"grok", "grok.exe"}:
+            raise ChipGrokError("strict sandbox mode requires the direct Grok executable, not a pre-exec wrapper")
+    child_env, secrets = worker_environment()
     receipt = prepare_worktree(repo)
     worktree = Path(str(receipt["worktree"]))
+    token = str(receipt["run_token"])
+    source_before = str(receipt.pop("source_status_raw"))
     model = os.getenv("CHIP_GROK_MODEL", "").strip()
     if model:
         command.extend(["-m", model])
-    command.extend(
-        [
-            "--cwd",
-            str(worktree),
-            "-p",
-            build_prompt(task),
-            "--output-format",
-            "json",
-            "--permission-mode",
-            "bypassPermissions",
-            "--no-subagents",
-            "--disable-web-search",
-            "--tools",
-            "read_file,grep,list_dir,search_replace,run_terminal_cmd",
-            "--max-turns",
-            os.getenv("CHIP_GROK_MAX_TURNS", str(DEFAULT_MAX_TURNS)),
-        ]
-    )
+    if sandbox_profile:
+        command.extend(["--sandbox", sandbox_profile])
+    command.extend([
+        "--cwd", str(worktree),
+        "-p", build_prompt(task, trusted_worker),
+        "--output-format", "json",
+        "--permission-mode", "bypassPermissions",
+        "--no-subagents",
+        "--disable-web-search",
+        "--tools", "read_file,grep,list_dir,search_replace,run_terminal_cmd",
+        "--max-turns", os.getenv("CHIP_GROK_MAX_TURNS", str(DEFAULT_MAX_TURNS)),
+    ])
     timeout = int(os.getenv("CHIP_GROK_TIMEOUT", str(DEFAULT_TIMEOUT)))
     try:
-        result = run_command(
-            command,
-            cwd=worktree,
-            env=child_env,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        receipt.update(
-            {
-                "status": "blocked",
-                "grok_exit_code": None,
-                "model_alias": model or "wrapper/default",
-                "changed_files": collect_changed_files(worktree),
-                "diff_check_ok": False,
-                "worker_result": "",
-                "worker_error": f"Grok timed out after {timeout} seconds",
-                "kept": True,
-            }
-        )
-        return receipt
-    receipt.update(
-        {
-            "status": "completed" if result.returncode == 0 else "blocked",
-            "grok_exit_code": result.returncode,
+        result = run_command(command, cwd=worktree, env=child_env, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        receipt.update({
+            "status": "blocked",
+            "grok_exit_code": None,
             "model_alias": model or "wrapper/default",
             "changed_files": collect_changed_files(worktree),
-            "diff_check_ok": run_command(
-                ["git", "diff", "--check"], cwd=worktree, check=False
-            ).returncode
-            == 0,
-            "worker_result": result.stdout.strip(),
-            "worker_error": result.stderr.strip(),
-            "kept": keep or result.returncode != 0,
-        }
-    )
-    if not receipt["kept"] and not receipt["changed_files"]:
-        cleanup_worktree(repo, worktree)
+            "diff_check_ok": False,
+            "worker_result": "",
+            "worker_error": f"Grok timed out after {timeout} seconds",
+            "source_mutated": git_status_raw(repo) != source_before,
+            "secret_leak_files": [],
+            "kept": True,
+        })
+        return receipt
+
+    changed = collect_changed_files(worktree)
+    leaks = secret_leak_files(worktree, changed, secrets)
+    source_after = git_status_raw(repo)
+    source_mutated = source_after != source_before
+    completed = result.returncode == 0 and not leaks and not source_mutated
+    receipt.update({
+        "status": "completed" if completed else "blocked",
+        "grok_exit_code": result.returncode,
+        "model_alias": model or "wrapper/default",
+        "trust_mode": "trusted-worker" if trusted_worker else f"sandbox:{sandbox_profile}",
+        "changed_files": changed,
+        "diff_check_ok": run_command(["git", "diff", "--check"], cwd=worktree, check=False).returncode == 0,
+        "worker_result": redact_text(result.stdout.strip(), secrets),
+        "worker_error": redact_text(result.stderr.strip(), secrets),
+        "source_mutated": source_mutated,
+        "secret_leak_files": leaks,
+        "kept": keep or not completed or bool(changed),
+    })
+    if not receipt["kept"]:
+        cleanup_worktree(repo, worktree, token, discard=False)
         receipt["worktree"] = None
     return receipt
 
 
-def cleanup_worktree(repo: Path, worktree: Path) -> None:
+def cleanup_worktree(repo: Path, worktree: Path, token: str, *, discard: bool) -> None:
     root = worktree_root().resolve()
     target = worktree.resolve()
     if root not in target.parents:
         raise ChipGrokError("refusing to clean a worktree outside CHIP_GROK_WORKTREE_ROOT")
-    run_command(["git", "worktree", "remove", "--force", str(target)], cwd=repo)
+    load_manifest(repo, target, token)
+    dirty = bool(git_status_raw(target))
+    if dirty and not discard:
+        raise ChipGrokError("worktree has changes; pass --discard only after preserving or rejecting the diff")
+    args = ["git", "worktree", "remove"]
+    if discard:
+        args.append("--force")
+    args.append(str(target))
+    run_command(args, cwd=repo)
+    manifest_path(token).unlink()
 
 
 def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(description=__doc__)
     sub = top.add_subparsers(dest="command", required=True)
 
-    prepare = sub.add_parser("prepare", help="create an isolated detached worktree")
+    prepare = sub.add_parser("prepare", help="create a detached worktree with an ownership receipt")
     prepare.add_argument("--repo", required=True)
 
     run = sub.add_parser("run", help="prepare a worktree and run Grok Build")
     run.add_argument("--repo", required=True)
     run.add_argument("--task", required=True)
     run.add_argument("--keep", action="store_true", help="keep an unchanged worktree too")
+    boundary = run.add_mutually_exclusive_group()
+    boundary.add_argument("--sandbox-profile", choices=["strict"])
+    boundary.add_argument("--trusted-worker", action="store_true", help="acknowledge that Grok can access files available to this Unix user")
 
-    clean = sub.add_parser("cleanup", help="remove a prepared worktree")
+    clean = sub.add_parser("cleanup", help="remove an owned prepared worktree")
     clean.add_argument("--repo", required=True)
     clean.add_argument("--worktree", required=True)
+    clean.add_argument("--run-token", required=True)
+    clean.add_argument("--discard", action="store_true", help="force-remove an owned dirty worktree")
     return top
 
 
@@ -280,10 +383,16 @@ def main() -> int:
         if args.command == "prepare":
             result = prepare_worktree(repo)
         elif args.command == "run":
-            result = run_worker(repo, args.task, args.keep)
+            result = run_worker(
+                repo,
+                args.task,
+                args.keep,
+                trusted_worker=args.trusted_worker,
+                sandbox_profile=args.sandbox_profile,
+            )
         else:
-            cleanup_worktree(repo, Path(args.worktree))
-            result = {"status": "cleaned", "worktree": str(Path(args.worktree))}
+            cleanup_worktree(repo, Path(args.worktree), args.run_token, discard=args.discard)
+            result = {"status": "cleaned", "worktree": str(Path(args.worktree)), "run_token": args.run_token}
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("status") != "blocked" else 1
     except (ChipGrokError, subprocess.TimeoutExpired, ValueError) as exc:
