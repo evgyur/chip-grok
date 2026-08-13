@@ -6,7 +6,9 @@ HERMES_ROOT=${HERMES_HOME:-"$HOME/.hermes"}
 TARGET="$HERMES_ROOT/skills/chip-grok"
 
 if [ -e "$TARGET" ]; then
-  BACKUP="$TARGET.backup.$(date +%Y%m%d%H%M%S)"
+  BACKUP_ROOT="$HERMES_ROOT/skill-backups"
+  mkdir -p "$BACKUP_ROOT"
+  BACKUP="$BACKUP_ROOT/chip-grok.$(date +%Y%m%d%H%M%S)"
   mv "$TARGET" "$BACKUP"
   printf 'Backed up existing skill to %s\n' "$BACKUP"
 fi

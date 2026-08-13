@@ -40,6 +40,8 @@ class PackageTests(unittest.TestCase):
         text = (ROOT / "scripts/install.sh").read_text()
         for marker in [".gitignore", ".github", "aliases", "references", "scripts", "tests"]:
             self.assertIn(marker, text)
+        self.assertIn("skill-backups", text)
+        self.assertNotIn('BACKUP="$TARGET.backup.', text)
 
     def test_shell_syntax(self) -> None:
         scripts = sorted((ROOT / "scripts").glob("*.sh"))
