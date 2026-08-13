@@ -2,7 +2,7 @@
 name: chip-grok
 description: "Use when delegating a coding task to Grok Build as a reviewed worker. Requires an enforced strict sandbox or explicit trusted-worker acknowledgement, uses an owned independent git clone, redacts scoped credentials, and requires independent verification."
 argument-hint: "<coding task; optionally include repo=/absolute/path>"
-version: 1.3.0
+version: 1.3.1
 author: Evgeny "Chip" Yurchenko
 license: MIT
 metadata:

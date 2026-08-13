@@ -902,6 +902,7 @@ class ChipGrokTests(unittest.TestCase):
                 "Path('transient.txt').write_text('transient credential payload\\n')\n"
                 "subprocess.run(['git','add','transient.txt'], check=True)\n"
                 "subprocess.run(['git','-c','user.name=Worker','-c','user.email=worker@example.invalid','commit','-qm','transient'], check=True)\n"
+                "subprocess.run(['git','tag','transient-tag'], check=True)\n"
                 "subprocess.run(['git','reset','--hard',base], check=True)\n"
                 "print('done')\n"
             )
@@ -950,10 +951,12 @@ class ChipGrokTests(unittest.TestCase):
                 env=env,
                 text=True,
                 stdout=subprocess.PIPE,
-                check=True,
             )
             receipt = json.loads(result.stdout)
-            self.assertEqual(receipt["status"], "completed")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(receipt["status"], "blocked")
+            self.assertTrue(receipt["worker_committed"])
+            self.assertTrue(Path(receipt["worktree"]).is_dir())
             self.assertEqual(subprocess.check_output(["git", "tag", "--list"], cwd=repo, text=True), "")
 
     def test_symlink_target_secret_is_detected(self) -> None:

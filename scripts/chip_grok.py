@@ -475,11 +475,22 @@ def worker_commit_created(worktree: Path, git_env: dict[str, str] | None = None)
 def normalize_worker_git(
     worktree: Path,
     base_head: str,
+    refs_before: str,
     git_env: dict[str, str] | None = None,
 ) -> tuple[str, bool]:
     worker_head = git_text(worktree, "rev-parse", "HEAD", env=git_env)
-    committed = worker_head != base_head or worker_commit_created(worktree, git_env)
-    reset = run_command(["git", "reset", "--mixed", base_head], cwd=worktree, env=git_env, check=False)
+    refs_after = refs_digest(worktree)
+    committed = (
+        worker_head != base_head
+        or refs_after != refs_before
+        or worker_commit_created(worktree, git_env)
+    )
+    reset = run_command(
+        ["git", "reset", "--mixed", base_head],
+        cwd=worktree,
+        env=git_env,
+        check=False,
+    )
     if reset.returncode != 0:
         raise ChipGrokError("failed to materialize worker Git state for review")
     return worker_head, committed
@@ -587,6 +598,7 @@ def run_worker(
     source_before = dict(receipt.pop("source_fingerprint"))
     base_head = str(receipt["base_head"])
     worker_env = child_env
+    refs_before = refs_digest(worktree)
     model = os.getenv("CHIP_GROK_MODEL", "").strip()
     if model:
         command.extend(["-m", model])
@@ -605,7 +617,9 @@ def run_worker(
     try:
         result = run_command(command, cwd=worktree, env=worker_env, timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
-        worker_head, worker_committed = normalize_worker_git(worktree, base_head, worker_env)
+        worker_head, worker_committed = normalize_worker_git(
+            worktree, base_head, refs_before, worker_env
+        )
         changed = sorted(set(collect_changed_files(worktree, base_head) + ignored_paths(worktree)))
         leaks, scan_complete = secret_leak_files(worktree, changed, secrets)
         receipt.update({
@@ -626,7 +640,9 @@ def run_worker(
         })
         return receipt
 
-    worker_head, worker_committed = normalize_worker_git(worktree, base_head, worker_env)
+    worker_head, worker_committed = normalize_worker_git(
+        worktree, base_head, refs_before, worker_env
+    )
     changed = sorted(set(collect_changed_files(worktree, base_head) + ignored_paths(worktree)))
     leaks, scan_complete = secret_leak_files(worktree, changed, secrets)
     source_after = repo_fingerprint(repo)
