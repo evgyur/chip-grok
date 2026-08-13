@@ -70,6 +70,8 @@ A worktree isolates **changes**, not host filesystem access. Never describe a tr
 
 Scoped provider values are removed from receipts and scanned in changed files. Cleanup requires the exact run token and refuses dirty worktrees unless `--discard` is explicit.
 
+Proxy variables are not inherited unless explicitly allowlisted. Worker commits are preserved as blocked results, source HEAD/index/status are fingerprinted, and timeouts terminate the whole worker process group.
+
 The supervising agent must inspect the diff and rerun tests before accepting changes.
 
 ## Development

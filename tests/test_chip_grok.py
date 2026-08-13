@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import signal
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 
 from scripts.chip_grok import status_paths
@@ -304,9 +306,152 @@ class ChipGrokTests(unittest.TestCase):
             self.assertEqual(json.loads(removed.stdout)["status"], "cleaned")
             self.assertFalse(worktree.exists())
 
+    def test_proxy_credentials_do_not_pass_without_explicit_allowlist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self.make_repo(root)
+            fake = root / "fake-grok"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os\n"
+                "print(json.dumps({'proxy_present': 'HTTP_PROXY' in os.environ or 'HTTPS_PROXY' in os.environ}))\n"
+            )
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+            env = os.environ | {
+                "CHIP_GROK_BIN": str(fake),
+                "CHIP_GROK_WORKTREE_ROOT": str(root / "worktrees"),
+                "HTTP_PROXY": "http://proxy-user:synthetic-proxy-password@example.invalid:8080",
+                "HTTPS_PROXY": "http://proxy-user:synthetic-proxy-password@example.invalid:8080",
+            }
+            result = subprocess.run(
+                ["python3", str(SCRIPT), "run", "--repo", str(repo), "--task", "inspect proxy", "--trusted-worker"],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                check=True,
+            )
+            receipt = json.loads(result.stdout)
+            self.assertNotIn("synthetic-proxy-password", result.stdout)
+            self.assertIn('"proxy_present": false', receipt["worker_result"])
+
+    def test_worker_commit_is_blocked_and_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self.make_repo(root)
+            fake = root / "fake-grok"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "from pathlib import Path\n"
+                "import subprocess\n"
+                "Path('committed.txt').write_text('preserve me\\n')\n"
+                "subprocess.run(['git','add','committed.txt'], check=True)\n"
+                "subprocess.run(['git','-c','user.name=Worker','-c','user.email=worker@example.invalid','commit','-qm','worker commit'], check=True)\n"
+                "print('done')\n"
+            )
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+            env = os.environ | {
+                "CHIP_GROK_BIN": str(fake),
+                "CHIP_GROK_WORKTREE_ROOT": str(root / "worktrees"),
+            }
+            result = subprocess.run(
+                ["python3", str(SCRIPT), "run", "--repo", str(repo), "--task", "commit", "--trusted-worker"],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+            )
+            receipt = json.loads(result.stdout)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(receipt["status"], "blocked")
+            self.assertTrue(receipt["worker_committed"])
+            self.assertIn("committed.txt", receipt["changed_files"])
+            self.assertTrue(Path(receipt["worktree"]).joinpath("committed.txt").exists())
+
+    def test_timeout_kills_worker_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self.make_repo(root)
+            fake = root / "fake-grok"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "from pathlib import Path\n"
+                "import subprocess, time\n"
+                "child = subprocess.Popen(['sleep','120'])\n"
+                "Path('child.pid').write_text(str(child.pid))\n"
+                "time.sleep(120)\n"
+            )
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+            env = os.environ | {
+                "CHIP_GROK_BIN": str(fake),
+                "CHIP_GROK_WORKTREE_ROOT": str(root / "worktrees"),
+                "CHIP_GROK_TIMEOUT": "1",
+            }
+            result = subprocess.run(
+                ["python3", str(SCRIPT), "run", "--repo", str(repo), "--task", "timeout", "--trusted-worker", "--keep"],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+            )
+            receipt = json.loads(result.stdout)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(receipt["status"], "blocked")
+            pid = int(Path(receipt["worktree"]).joinpath("child.pid").read_text())
+            time.sleep(0.1)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+    def test_source_head_mutation_is_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self.make_repo(root)
+            fake = root / "fake-grok"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "from pathlib import Path\n"
+                "import subprocess\n"
+                "common = Path(subprocess.check_output(['git','rev-parse','--git-common-dir'], text=True).strip()).resolve()\n"
+                "source = common.parent\n"
+                "subprocess.run(['git','-c','user.name=Worker','-c','user.email=worker@example.invalid','commit','--allow-empty','-qm','source mutation'], cwd=source, check=True)\n"
+                "print('done')\n"
+            )
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+            env = os.environ | {
+                "CHIP_GROK_BIN": str(fake),
+                "CHIP_GROK_WORKTREE_ROOT": str(root / "worktrees"),
+            }
+            result = subprocess.run(
+                ["python3", str(SCRIPT), "run", "--repo", str(repo), "--task", "mutate source head", "--trusted-worker", "--keep"],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+            )
+            receipt = json.loads(result.stdout)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue(receipt["source_mutated"])
+
+    def test_installer_self_update_from_active_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "hermes-home"
+            first = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "install.sh")],
+                env=os.environ | {"HERMES_HOME": str(home)},
+                text=True,
+                stdout=subprocess.PIPE,
+                check=True,
+            )
+            target = home / "skills" / "chip-grok"
+            self.assertTrue(target.is_dir(), first.stdout)
+            second = subprocess.run(
+                ["bash", str(target / "scripts" / "install.sh")],
+                env=os.environ | {"HERMES_HOME": str(home)},
+                text=True,
+                stdout=subprocess.PIPE,
+                check=True,
+            )
+            self.assertTrue(target.joinpath("SKILL.md").is_file(), second.stdout)
+            self.assertTrue(any((home / "skill-backups").glob("chip-grok.*")))
+
     def test_rename_status_parser_keeps_destination_only(self) -> None:
         self.assertEqual(status_paths("R  new-name.txt\0old-name.txt\0"), ["new-name.txt"])
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,23 +4,30 @@ set -euo pipefail
 SOURCE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 HERMES_ROOT=${HERMES_HOME:-"$HOME/.hermes"}
 TARGET="$HERMES_ROOT/skills/chip-grok"
+BACKUP_ROOT="$HERMES_ROOT/skill-backups"
+STAGE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/chip-grok-install.XXXXXX")
+STAGE="$STAGE_ROOT/chip-grok"
+trap 'rm -rf "$STAGE_ROOT"' EXIT
 
+mkdir -p "$STAGE"
+for path in SKILL.md README.md LICENSE .gitignore .github aliases references scripts tests; do
+  cp -R "$SOURCE_DIR/$path" "$STAGE/"
+done
+find "$STAGE" -type d -name __pycache__ -prune -exec rm -rf {} +
+find "$STAGE" -type f -name '*.pyc' -delete
+chmod 700 "$STAGE/scripts/install.sh" "$STAGE/scripts/test.sh"
+chmod 700 "$STAGE/scripts/chip_grok.py"
+
+# The source is now fully staged. This keeps self-update safe even when this
+# installer is running from the currently active skill directory.
 if [ -e "$TARGET" ]; then
-  BACKUP_ROOT="$HERMES_ROOT/skill-backups"
   mkdir -p "$BACKUP_ROOT"
   BACKUP="$BACKUP_ROOT/chip-grok.$(date +%Y%m%d%H%M%S)"
   mv "$TARGET" "$BACKUP"
   printf 'Backed up existing skill to %s\n' "$BACKUP"
 fi
-
-mkdir -p "$TARGET"
-for path in SKILL.md README.md LICENSE .gitignore .github aliases references scripts tests; do
-  cp -R "$SOURCE_DIR/$path" "$TARGET/"
-done
-find "$TARGET" -type d -name __pycache__ -prune -exec rm -rf {} +
-find "$TARGET" -type f -name '*.pyc' -delete
-chmod 700 "$TARGET/scripts/install.sh" "$TARGET/scripts/test.sh"
-chmod 700 "$TARGET/scripts/chip_grok.py"
+mkdir -p "$(dirname "$TARGET")"
+mv "$STAGE" "$TARGET"
 
 printf 'Installed chip-grok at %s\n' "$TARGET"
 printf 'Run /reload-skills in a live Hermes gateway session.\n'

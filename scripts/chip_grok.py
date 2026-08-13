@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import shlex
 import shutil
 import subprocess
@@ -35,16 +36,34 @@ def run_command(
     timeout: int | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
+    process = subprocess.Popen(
         args,
         cwd=cwd,
         env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        timeout=timeout,
-        check=False,
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        # Kill the whole worker process group, not only the direct Grok process.
+        # Otherwise shell/tool descendants can outlive the bounded run.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            stdout, stderr = process.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(args, timeout, output=stdout, stderr=stderr) from exc
+    result = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise ChipGrokError(f"command failed ({result.returncode}): {detail}")
@@ -65,6 +84,14 @@ def git_text(repo: Path, *args: str) -> str:
 
 def git_status_raw(repo: Path) -> str:
     return run_command(["git", "status", "--porcelain=v1", "-z"], cwd=repo).stdout
+
+
+def repo_fingerprint(repo: Path) -> dict[str, str]:
+    """Capture source HEAD, index tree, and worktree status."""
+    head = git_text(repo, "rev-parse", "HEAD")
+    index = run_command(["git", "write-tree"], cwd=repo, check=False)
+    index_tree = index.stdout.strip() if index.returncode == 0 else f"ERROR:{index.stderr.strip()}"
+    return {"head": head, "index_tree": index_tree, "status_raw": git_status_raw(repo)}
 
 
 def status_paths(raw: str) -> list[str]:
@@ -138,7 +165,7 @@ def load_manifest(repo: Path, worktree: Path, token: str) -> dict[str, object]:
 def prepare_worktree(repo: Path) -> dict[str, object]:
     head = git_text(repo, "rev-parse", "HEAD")
     branch = git_text(repo, "branch", "--show-current") or "DETACHED"
-    source_status = git_status_raw(repo)
+    source = repo_fingerprint(repo)
     token = f"chip-grok-{int(time.time())}-{uuid.uuid4().hex[:8]}"
     destination = worktree_root() / token
     run_command(["git", "worktree", "add", "--detach", str(destination), head], cwd=repo)
@@ -154,9 +181,9 @@ def prepare_worktree(repo: Path) -> dict[str, object]:
     return {
         **manifest,
         "base_branch": branch,
-        "source_dirty": bool(source_status),
-        "source_status": status_paths(source_status),
-        "source_status_raw": source_status,
+        "source_dirty": bool(source["status_raw"]),
+        "source_status": status_paths(source["status_raw"]),
+        "source_fingerprint": source,
     }
 
 
@@ -177,7 +204,7 @@ def worker_environment() -> tuple[dict[str, str], list[str]]:
     baseline = {
         "HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM",
         "NO_COLOR", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
-        "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+        "SSL_CERT_FILE", "SSL_CERT_DIR",
     }
     requested = {
         item.strip()
@@ -235,8 +262,15 @@ Contract:
 """
 
 
-def collect_changed_files(worktree: Path) -> list[str]:
-    return status_paths(git_status_raw(worktree))
+def collect_changed_files(worktree: Path, base_head: str) -> list[str]:
+    status = status_paths(git_status_raw(worktree))
+    committed = run_command(
+        ["git", "diff", "--name-only", "-z", f"{base_head}..HEAD"],
+        cwd=worktree,
+        check=False,
+    )
+    commit_paths = [item for item in committed.stdout.split("\0") if item] if committed.returncode == 0 else []
+    return sorted(set(status + commit_paths))
 
 
 def secret_leak_files(worktree: Path, changed_files: list[str], secrets: list[str]) -> list[str]:
@@ -278,7 +312,8 @@ def run_worker(
     receipt = prepare_worktree(repo)
     worktree = Path(str(receipt["worktree"]))
     token = str(receipt["run_token"])
-    source_before = str(receipt.pop("source_status_raw"))
+    source_before = dict(receipt.pop("source_fingerprint"))
+    base_head = str(receipt["base_head"])
     model = os.getenv("CHIP_GROK_MODEL", "").strip()
     if model:
         command.extend(["-m", model])
@@ -302,21 +337,23 @@ def run_worker(
             "status": "blocked",
             "grok_exit_code": None,
             "model_alias": model or "wrapper/default",
-            "changed_files": collect_changed_files(worktree),
+            "changed_files": collect_changed_files(worktree, base_head),
             "diff_check_ok": False,
             "worker_result": "",
             "worker_error": f"Grok timed out after {timeout} seconds",
-            "source_mutated": git_status_raw(repo) != source_before,
+            "source_mutated": repo_fingerprint(repo) != source_before,
             "secret_leak_files": [],
             "kept": True,
         })
         return receipt
 
-    changed = collect_changed_files(worktree)
+    changed = collect_changed_files(worktree, base_head)
     leaks = secret_leak_files(worktree, changed, secrets)
-    source_after = git_status_raw(repo)
+    source_after = repo_fingerprint(repo)
     source_mutated = source_after != source_before
-    completed = result.returncode == 0 and not leaks and not source_mutated
+    worker_head = git_text(worktree, "rev-parse", "HEAD")
+    worker_committed = worker_head != base_head
+    completed = result.returncode == 0 and not leaks and not source_mutated and not worker_committed
     receipt.update({
         "status": "completed" if completed else "blocked",
         "grok_exit_code": result.returncode,
@@ -327,6 +364,8 @@ def run_worker(
         "worker_result": redact_text(result.stdout.strip(), secrets),
         "worker_error": redact_text(result.stderr.strip(), secrets),
         "source_mutated": source_mutated,
+        "worker_committed": worker_committed,
+        "worker_head": worker_head,
         "secret_leak_files": leaks,
         "kept": keep or not completed or bool(changed),
     })

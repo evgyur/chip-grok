@@ -2,7 +2,7 @@
 name: chip-grok
 description: "Use when delegating a coding task to Grok Build as a reviewed worker. Requires an enforced strict sandbox or explicit trusted-worker acknowledgement, uses an owned git worktree, redacts scoped credentials, and requires independent verification."
 argument-hint: "<coding task; optionally include repo=/absolute/path>"
-version: 1.1.0
+version: 1.2.0
 author: Evgeny "Chip" Yurchenko
 license: MIT
 metadata:
@@ -88,7 +88,9 @@ See [portable setup](references/portable-setup.md) for OpenAI-compatible model c
 - Never use auto-approval directly in a production checkout.
 - No commits, pushes, PRs, deployments, migrations, secrets, payments, or production mutations by the worker.
 - Pass only a scoped/revocable provider credential through `CHIP_GROK_PASSTHROUGH_ENV`; never expose the supervising gateway's full environment. Redact it from stdout/stderr and block if it appears in changed files.
+- Proxy variables are not inherited implicitly; if a provider genuinely requires one, name it explicitly in `CHIP_GROK_PASSTHROUGH_ENV` so its full value is redacted too.
 - Cleanup requires a matching ownership receipt and run token. Refuse dirty worktrees unless `--discard` is explicit.
+- A worker-created commit is a blocked result and the worktree is preserved. Timeouts terminate the full worker process group.
 - Treat Grok output as a self-report until files and tests are verified independently.
 - Public distributions must not include private endpoints, model-account names, chat IDs, hosts, local absolute paths, or credentials.
 
@@ -115,6 +117,7 @@ next_effect: <apply/commit/push withheld or explicitly approved>
 - A cooperative fake worker creates a file inside the worktree; an adversarial source-escape attempt is detected and blocks the receipt.
 - Unsandboxed execution without `--trusted-worker` fails closed.
 - Scoped credentials are redacted from output and detected in changed files.
+- Implicit proxy credentials never reach the worker; worker commits and source HEAD/index mutations block; timeout descendants are killed.
 - A missing Grok executable fails with `status: blocked`.
 - Cleanup refuses paths outside `CHIP_GROK_WORKTREE_ROOT`.
 - `python3 scripts/public_hygiene.py` reports `PUBLIC_HYGIENE_OK`.
