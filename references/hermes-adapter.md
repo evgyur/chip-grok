@@ -32,4 +32,4 @@ The supervising Hermes agent follows `SKILL.md`, runs the bundled script by abso
 
 ## Why this is a skill, not a raw exec command
 
-A raw quick-command subprocess does not reliably know which repository the conversation refers to and cannot supervise acceptance of a generated diff. Skill invocation keeps repository resolution, worktree preparation, verification, and approval boundaries inside the agent loop.
+A raw quick-command subprocess does not reliably know which repository the conversation refers to and cannot supervise acceptance of a generated diff. Skill invocation keeps repository resolution, clone preparation, verification, and approval boundaries inside the agent loop.

@@ -7,7 +7,7 @@ It keeps the useful part of Grok Build—repository tools, agent loop, and codin
 ## What it does
 
 - resolves an exact Git repository;
-- creates a dedicated detached worktree with an ownership receipt;
+- creates a dedicated independent detached clone with an ownership receipt;
 - runs Grok Build with a locally configured model alias;
 - forbids commit, push, deploy, secrets, and production effects in the worker prompt;
 - captures the result as JSON;
@@ -66,11 +66,11 @@ The runner fails closed unless either:
 - `--sandbox-profile strict` requests Grok's enforced filesystem/process sandbox; or
 - `--trusted-worker` explicitly acknowledges that Grok can access anything available to the current Unix user.
 
-A worktree isolates **changes**, not host filesystem access. Never describe a trusted-worker run as sandboxed.
+An independent clone protects the source Git database from normal worker Git operations, but it is not a host filesystem sandbox. Never describe a trusted-worker run as sandboxed.
 
-Scoped provider values are removed from receipts and scanned in changed files. Cleanup requires the exact run token and refuses dirty worktrees unless `--discard` is explicit.
+Scoped provider values are removed from receipts and scanned with bounded streaming across tracked changes plus untracked/ignored outputs—including filenames and symlink targets—after normal exits and timeouts. An incomplete scan blocks completion. Cleanup requires the exact run token and refuses dirty or committed clones unless `--discard` is explicit.
 
-Proxy variables are not inherited unless explicitly allowlisted. Worker commits are preserved as blocked results, source HEAD/index/status are fingerprinted, and timeouts terminate the whole worker process group.
+Proxy variables are not inherited unless explicitly allowlisted. The source checkout must be clean and is fingerprinted before/after clone preparation and worker execution. The clone uses its own Git database without hardlinks or alternates, so worker commits, tags, and objects do not enter the source repository. Any worker commit is materialized back into a reviewable diff and blocks completion. Both normal exits and timeouts terminate the worker process group while timeout receipts retain worker HEAD evidence. Failed streaming diff/whitespace checks—including large untracked files—also block completion.
 
 The supervising agent must inspect the diff and rerun tests before accepting changes.
 

@@ -1,8 +1,8 @@
 ---
 name: chip-grok
-description: "Use when delegating a coding task to Grok Build as a reviewed worker. Requires an enforced strict sandbox or explicit trusted-worker acknowledgement, uses an owned git worktree, redacts scoped credentials, and requires independent verification."
+description: "Use when delegating a coding task to Grok Build as a reviewed worker. Requires an enforced strict sandbox or explicit trusted-worker acknowledgement, uses an owned independent git clone, redacts scoped credentials, and requires independent verification."
 argument-hint: "<coding task; optionally include repo=/absolute/path>"
-version: 1.2.0
+version: 1.3.0
 author: Evgeny "Chip" Yurchenko
 license: MIT
 metadata:
@@ -13,7 +13,7 @@ metadata:
 
 # chip-grok
 
-Delegate one coding task to Grok Build without confusing worktree separation with process isolation.
+Delegate one coding task to Grok Build in an independent clone without confusing repository separation with process isolation.
 
 ## Trigger
 
@@ -38,7 +38,7 @@ If the task is missing, return:
    - record branch, HEAD, and `git status --short`;
    - stop if the requested task is ambiguous or the repository is not identifiable;
    - never overwrite or absorb unrelated dirty changes.
-2. Run `scripts/chip_grok.py prepare --repo <repo>` to create a dedicated detached worktree under a configurable worktree root and record its ownership token.
+2. Run `scripts/chip_grok.py prepare --repo <repo>` to create a dedicated independent detached clone under a configurable root and record its ownership token.
 3. Write a bounded task prompt that includes:
    - goal and acceptance criteria;
    - inspect before editing;
@@ -81,16 +81,18 @@ See [portable setup](references/portable-setup.md) for OpenAI-compatible model c
 
 ## Safety boundaries
 
-- One Grok writer per worktree.
-- A dedicated worktree is mandatory for edits, but it is **not** a filesystem/process security boundary.
+- One Grok writer per clone.
+- A dedicated independent clone is mandatory for edits, but it is **not** a filesystem/process security boundary.
 - Fail closed unless Grok's `strict` sandbox initializes successfully or `--trusted-worker` explicitly acknowledges full same-user host access.
 - Deny network tools by default when the task does not need them.
 - Never use auto-approval directly in a production checkout.
 - No commits, pushes, PRs, deployments, migrations, secrets, payments, or production mutations by the worker.
-- Pass only a scoped/revocable provider credential through `CHIP_GROK_PASSTHROUGH_ENV`; never expose the supervising gateway's full environment. Redact it from stdout/stderr and block if it appears in changed files.
+- Pass only a scoped/revocable provider credential through `CHIP_GROK_PASSTHROUGH_ENV`; never expose the supervising gateway's full environment. Redact it from stdout/stderr and use a bounded streaming scan over tracked changes plus untracked/ignored outputs, filenames, and symlink targets after normal exits and timeouts. An incomplete scan blocks completion.
 - Proxy variables are not inherited implicitly; if a provider genuinely requires one, name it explicitly in `CHIP_GROK_PASSTHROUGH_ENV` so its full value is redacted too.
-- Cleanup requires a matching ownership receipt and run token. Refuse dirty worktrees unless `--discard` is explicit.
-- A worker-created commit is a blocked result and the worktree is preserved. Timeouts terminate the full worker process group.
+- Cleanup requires a matching ownership receipt and run token. Refuse dirty or committed clones unless `--discard` is explicit.
+- A worker-created or transient commit is a blocked result. The independent clone has its own Git database without hardlinks or alternates; commits are materialized back into a reviewable diff. Normal exits and timeouts terminate the worker process group; timeout receipts still report worker HEAD/commit state.
+- Source repository must be clean before preparation; preparation and post-run checks fingerprint source state without writing Git objects.
+- Failed diff/whitespace checks block completion, including streaming checks for large untracked files.
 - Treat Grok output as a self-report until files and tests are verified independently.
 - Public distributions must not include private endpoints, model-account names, chat IDs, hosts, local absolute paths, or credentials.
 
@@ -102,7 +104,7 @@ Return:
 status: completed | blocked
 repo: <resolved repo>
 base: <branch + HEAD>
-worktree: <dedicated path>
+clone: <dedicated path; receipt field remains `worktree` for compatibility>
 run_token: <ownership token>
 model_alias: <non-secret alias>
 changed: <files>
@@ -113,8 +115,8 @@ next_effect: <apply/commit/push withheld or explicitly approved>
 
 ## Quick Test Checklist
 
-- `python3 scripts/chip_grok.py prepare --repo <throwaway-repo>` returns a detached worktree at the exact base HEAD.
-- A cooperative fake worker creates a file inside the worktree; an adversarial source-escape attempt is detected and blocks the receipt.
+- `python3 scripts/chip_grok.py prepare --repo <throwaway-repo>` returns an independent detached clone at the exact base HEAD.
+- A cooperative fake worker creates a file inside the clone; an adversarial source-escape attempt is detected and blocks the receipt.
 - Unsandboxed execution without `--trusted-worker` fails closed.
 - Scoped credentials are redacted from output and detected in changed files.
 - Implicit proxy credentials never reach the worker; worker commits and source HEAD/index mutations block; timeout descendants are killed.

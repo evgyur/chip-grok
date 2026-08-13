@@ -65,4 +65,4 @@ The runner starts Grok with a minimal environment. Unrelated gateway/provider se
 
 Use Grok's `--sandbox strict`, not `workspace`, when you need enforced repository-scoped filesystem access. If strict mode fails with bubblewrap/user-namespace errors, do not claim sandboxing and do not silently continue. Either repair the host sandbox or make the full-trust decision explicit with `--trusted-worker`.
 
-The worktree is only a change-management boundary. A trusted same-user process can follow Git metadata back to the source checkout or read other user files.
+The independent clone protects the source Git database from normal worker Git operations, but it is not a host filesystem sandbox. A trusted same-user process can still read or write other user-accessible paths.
