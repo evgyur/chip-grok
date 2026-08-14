@@ -2,13 +2,23 @@ from __future__ import annotations
 
 import json
 import fcntl
+import importlib.util
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "update-fork.py"
+
+
+def load_updater():
+    spec = importlib.util.spec_from_file_location("chip_grok_update_fork", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def run(args: list[str], cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -121,6 +131,54 @@ class UpdateForkTests(unittest.TestCase):
             self.assertEqual(report["status"], "conflict")
             self.assertEqual(report["conflicts"], ["shared.txt"])
             self.assertTrue(candidate.exists())
+
+    def test_publish_failure_rolls_active_release_back(self) -> None:
+        updater = load_updater()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = root / "candidate"
+            candidate.mkdir()
+            install_root = root / "install"
+            old_release = install_root / "releases" / "old"
+            new_release = install_root / "releases" / "new"
+            old_release.mkdir(parents=True)
+            new_release.mkdir(parents=True)
+            current = install_root / "current"
+            current.symlink_to(old_release)
+            calls: list[tuple[str, ...]] = []
+
+            def fake_git(_repo: Path, *args: str, **_kwargs: object) -> str:
+                calls.append(tuple(args))
+                if "--atomic" in args:
+                    raise updater.SyncError("simulated atomic push failure")
+                return ""
+
+            def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                if "install" in args:
+                    current.unlink()
+                    current.symlink_to(new_release)
+                elif "rollback" in args:
+                    current.unlink()
+                    current.symlink_to(old_release)
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+            report = {
+                "candidate": str(candidate),
+                "fork_head": "a" * 40,
+                "candidate_head": "b" * 40,
+                "upstream_head": "c" * 40,
+                "lock": {"tag": "chip-v1.test"},
+            }
+            with mock.patch.object(updater, "git", side_effect=fake_git), mock.patch.object(
+                updater, "run", side_effect=fake_run
+            ):
+                with self.assertRaises(updater.SyncError):
+                    updater.publish_and_activate(
+                        report, root / "grok", root / "fork.lock.json", root, install_root
+                    )
+
+            self.assertEqual(current.resolve(), old_release.resolve())
+            self.assertTrue(any("--atomic" in call for call in calls))
 
 
 if __name__ == "__main__":

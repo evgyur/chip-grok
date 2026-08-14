@@ -347,30 +347,70 @@ def publish_and_activate(
     old_head = report["fork_head"]
     new_head = report["candidate_head"]
     archive_tag = f"archive/pre-upstream-{report['upstream_head'][:12]}-{old_head[:12]}"
+    current = install_root / "current"
+    if not current.is_symlink():
+        raise SyncError("activation requires an existing verified current release")
+
+    def active_target() -> Path | None:
+        try:
+            return current.resolve(strict=True) if current.is_symlink() else None
+        except (FileNotFoundError, RuntimeError):
+            return None
+
+    active_before = active_target()
+    if active_before is None:
+        raise SyncError("activation requires an existing verified current release")
+
     git(candidate, "push", "origin", f"{old_head}:refs/tags/{archive_tag}")
-    git(
-        candidate,
-        "push",
-        f"--force-with-lease=refs/heads/main:{old_head}",
-        "origin",
-        f"{new_head}:refs/heads/main",
-    )
     tag = report["lock"]["tag"]
     git(candidate, "tag", "-f", tag, new_head)
-    git(candidate, "push", "origin", f"refs/tags/{tag}")
-    run(
-        [
-            "bash",
-            str(adapter_root / "scripts" / "install-fork.sh"),
-            "install",
-            "--root",
-            str(install_root),
-            "--binary",
-            str(binary),
-            "--lock",
-            str(lock_path),
-        ]
-    )
+
+    install_command = [
+        "bash",
+        str(adapter_root / "scripts" / "install-fork.sh"),
+        "install",
+        "--root",
+        str(install_root),
+        "--binary",
+        str(binary),
+        "--lock",
+        str(lock_path),
+    ]
+    rollback_command = [
+        "bash",
+        str(adapter_root / "scripts" / "install-fork.sh"),
+        "rollback",
+        "--root",
+        str(install_root),
+    ]
+
+    def restore_active(cause: Exception) -> None:
+        rollback = run(rollback_command, check=False)
+        restored = active_target() == active_before
+        if rollback.returncode != 0 or not restored:
+            raise SyncError("candidate failed and automatic active-release rollback failed") from cause
+
+    try:
+        run(install_command)
+    except Exception as exc:
+        if active_target() != active_before:
+            restore_active(exc)
+        raise
+
+    try:
+        git(
+            candidate,
+            "push",
+            "--atomic",
+            f"--force-with-lease=refs/heads/main:{old_head}",
+            "origin",
+            f"{new_head}:refs/heads/main",
+            f"refs/tags/{tag}",
+        )
+    except Exception as exc:
+        restore_active(exc)
+        raise
+
     return {**report, "status": "activated", "archive_tag": archive_tag}
 
 
