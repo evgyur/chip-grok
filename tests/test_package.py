@@ -17,6 +17,11 @@ class PackageTests(unittest.TestCase):
             "scripts/install.sh",
             "scripts/test.sh",
             "scripts/public_hygiene.py",
+            "scripts/fork_contract.py",
+            "scripts/verify-fork.py",
+            "scripts/install-fork.sh",
+            "scripts/update-fork.py",
+            "fork.lock.json",
             "aliases/grok/SKILL.md",
             "references/portable-setup.md",
             "references/hermes-adapter.md",
@@ -39,7 +44,7 @@ class PackageTests(unittest.TestCase):
 
     def test_installer_uses_full_directory_package(self) -> None:
         text = (ROOT / "scripts/install.sh").read_text()
-        for marker in [".gitignore", ".github", "aliases", "references", "scripts", "tests"]:
+        for marker in ["fork.lock.json", ".gitignore", ".github", "aliases", "references", "scripts", "tests"]:
             self.assertIn(marker, text)
         self.assertIn("skill-backups", text)
         self.assertNotIn('BACKUP="$TARGET.backup.', text)

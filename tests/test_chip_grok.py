@@ -18,6 +18,16 @@ SCRIPT = ROOT / "scripts" / "chip_grok.py"
 
 
 class ChipGrokTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._old_unverified_test_mode = os.environ.get("CHIP_GROK_UNVERIFIED_TEST_ONLY")
+        os.environ["CHIP_GROK_UNVERIFIED_TEST_ONLY"] = "1"
+
+    def tearDown(self) -> None:
+        if self._old_unverified_test_mode is None:
+            os.environ.pop("CHIP_GROK_UNVERIFIED_TEST_ONLY", None)
+        else:
+            os.environ["CHIP_GROK_UNVERIFIED_TEST_ONLY"] = self._old_unverified_test_mode
+
     def make_repo(self, root: Path) -> Path:
         repo = root / "repo"
         repo.mkdir()

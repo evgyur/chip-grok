@@ -49,15 +49,16 @@ python3 scripts/chip_grok.py run \
 
 If the host cannot initialize Grok's strict sandbox, the runner fails closed. `--trusted-worker` is an explicit acknowledgement that the Grok process has the same filesystem visibility as the current Unix user; use it only for a fully trusted worker on a controlled host.
 
-## Trusted wrapper
+## Verified candidate override
 
-If a local wrapper selects the model and loads provider environment safely:
+To test a candidate before activation, point at the direct binary and its matching lock:
 
 ```bash
-export CHIP_GROK_BIN="$HOME/.local/bin/grok-my-provider"
+export CHIP_GROK_BIN=/path/to/candidate/grok
+export CHIP_GROK_LOCK_FILE=/path/to/candidate/fork.lock.json
 ```
 
-The wrapper path is local operator configuration. Do not commit it to a public repository. If the wrapper needs a scoped credential from its parent process, name only that variable in `CHIP_GROK_PASSTHROUGH_ENV`.
+The runner rejects wrappers and unverified binaries. Provider credentials remain scoped environment variables named in `CHIP_GROK_PASSTHROUGH_ENV`.
 
 The runner starts Grok with a minimal environment. Unrelated gateway/provider secrets are not inherited. Proxy variables are also excluded by default because proxy URLs may contain credentials. A provider or proxy variable is passed only when its name appears in `CHIP_GROK_PASSTHROUGH_ENV`; missing requested variables fail closed and allowed values are redacted from receipts.
 

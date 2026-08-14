@@ -31,7 +31,13 @@ The canonical command is `/chip-grok`. The package also installs a small `/grok`
 
 ## Configure Grok Build
 
-Install and configure Grok Build separately. This repository never stores provider credentials.
+Install the verified downstream binary and lock together:
+
+```bash
+scripts/install-fork.sh install --binary /path/to/grok --lock /path/to/fork.lock.json
+```
+
+The runner opens and verifies the exact binary (hash plus embedded fork/upstream provenance) before creating a worker clone. This repository never stores provider credentials.
 
 For a model already defined in `~/.grok/config.toml`:
 
@@ -40,13 +46,14 @@ export CHIP_GROK_MODEL=my-coding-model
 export CHIP_GROK_PASSTHROUGH_ENV=MY_GATEWAY_API_KEY
 ```
 
-Or point at a trusted local wrapper that already selects the provider/model:
+To test an unactivated candidate, supply its executable and matching lock:
 
 ```bash
-export CHIP_GROK_BIN="$HOME/.local/bin/grok-my-provider"
+export CHIP_GROK_BIN=/path/to/candidate/grok
+export CHIP_GROK_LOCK_FILE=/path/to/candidate/fork.lock.json
 ```
 
-See [`references/portable-setup.md`](references/portable-setup.md).
+Wrappers and unverified binaries are rejected. See [`references/portable-setup.md`](references/portable-setup.md) and [`references/upstream-sync.md`](references/upstream-sync.md).
 
 ## Direct CLI use
 

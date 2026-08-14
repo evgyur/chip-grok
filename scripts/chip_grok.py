@@ -18,6 +18,11 @@ import tempfile
 import time
 import uuid
 
+try:
+    from .fork_contract import ContractError, read_json, validate_lock, verify_fork_fd
+except ImportError:
+    from fork_contract import ContractError, read_json, validate_lock, verify_fork_fd
+
 DEFAULT_MAX_TURNS = 60
 DEFAULT_TIMEOUT = 1800
 MAX_RECEIPT_TEXT = 200_000
@@ -56,6 +61,7 @@ def run_command(
     env: dict[str, str] | None = None,
     timeout: int | None = None,
     check: bool = True,
+    pass_fds: tuple[int, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     process = subprocess.Popen(
         args,
@@ -65,6 +71,7 @@ def run_command(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
+        pass_fds=pass_fds,
     )
     try:
         stdout, stderr = process.communicate(timeout=timeout)
@@ -366,16 +373,47 @@ def prepare_worktree(repo: Path) -> dict[str, object]:
     }
 
 
-def grok_command() -> list[str]:
-    configured = os.getenv("CHIP_GROK_BIN", "grok").strip()
-    parts = shlex.split(configured)
-    if not parts:
-        raise ChipGrokError("CHIP_GROK_BIN is empty")
-    executable = shutil.which(parts[0]) if not Path(parts[0]).is_absolute() else parts[0]
-    if not executable or not Path(executable).exists():
-        raise ChipGrokError("Grok executable or wrapper was not found")
-    parts[0] = str(executable)
-    return parts
+def fork_lock_path() -> Path:
+    configured = os.getenv("CHIP_GROK_LOCK_FILE", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return Path.home() / ".local" / "lib" / "chip-grok" / "current" / "fork.lock.json"
+
+
+def grok_command() -> tuple[list[str], int | None]:
+    configured = os.getenv("CHIP_GROK_BIN", "").strip()
+    if os.getenv("CHIP_GROK_UNVERIFIED_TEST_ONLY") == "1":
+        parts = shlex.split(configured or "grok")
+        if not parts:
+            raise ChipGrokError("CHIP_GROK_BIN is empty")
+        executable = shutil.which(parts[0]) if not Path(parts[0]).is_absolute() else parts[0]
+        if not executable or not Path(executable).exists():
+            raise ChipGrokError("Grok executable or wrapper was not found")
+        parts[0] = str(executable)
+        return parts, None
+
+    lock_path = fork_lock_path()
+    try:
+        lock = validate_lock(read_json(lock_path))
+    except ContractError as exc:
+        raise ChipGrokError(f"verified fork preflight failed: {exc}") from exc
+    binary = Path(configured).expanduser().resolve() if configured else lock_path.parent / lock["binary_path"]
+    if binary.resolve() != (lock_path.parent / lock["binary_path"]).resolve():
+        raise ChipGrokError("verified fork binary path does not match the active lock")
+    if configured and len(shlex.split(configured)) != 1:
+        raise ChipGrokError("verified fork mode requires the direct Grok executable")
+    binary_fd: int | None = None
+    try:
+        binary_fd = os.open(binary, os.O_RDONLY | os.O_NOFOLLOW)
+        verify_fork_fd(binary_fd, binary, lock_path)
+    except (OSError, ContractError) as exc:
+        try:
+            if binary_fd is not None:
+                os.close(binary_fd)
+        except OSError:
+            pass
+        raise ChipGrokError(f"verified fork preflight failed: {exc}") from exc
+    return [f"/proc/self/fd/{binary_fd}"], binary_fd
 
 
 def worker_environment() -> tuple[dict[str, str], list[str]]:
@@ -580,10 +618,6 @@ def run_worker(
         raise ChipGrokError(
             "refusing unsandboxed worker: pass --sandbox-profile strict, or explicitly acknowledge a fully trusted process with --trusted-worker"
         )
-    command = grok_command()
-    if sandbox_profile == "strict":
-        if len(command) != 1 or Path(command[0]).name not in {"grok", "grok.exe"}:
-            raise ChipGrokError("strict sandbox mode requires the direct Grok executable, not a pre-exec wrapper")
     child_env, secrets = worker_environment()
     try:
         timeout = int(os.getenv("CHIP_GROK_TIMEOUT", str(DEFAULT_TIMEOUT)))
@@ -592,6 +626,10 @@ def run_worker(
         raise ChipGrokError("CHIP_GROK_TIMEOUT and CHIP_GROK_MAX_TURNS must be integers") from exc
     if timeout <= 0 or max_turns <= 0:
         raise ChipGrokError("CHIP_GROK_TIMEOUT and CHIP_GROK_MAX_TURNS must be positive")
+    command, binary_fd = grok_command()
+    if sandbox_profile == "strict":
+        if binary_fd is None and (len(command) != 1 or Path(command[0]).name not in {"grok", "grok.exe"}):
+            raise ChipGrokError("strict sandbox mode requires the direct Grok executable, not a pre-exec wrapper")
     receipt = prepare_worktree(repo)
     worktree = Path(str(receipt["worktree"]))
     token = str(receipt["run_token"])
@@ -615,8 +653,17 @@ def run_worker(
         "--max-turns", str(max_turns),
     ])
     try:
-        result = run_command(command, cwd=worktree, env=worker_env, timeout=timeout, check=False)
+        result = run_command(
+            command,
+            cwd=worktree,
+            env=worker_env,
+            timeout=timeout,
+            check=False,
+            pass_fds=() if binary_fd is None else (binary_fd,),
+        )
     except subprocess.TimeoutExpired:
+        if binary_fd is not None:
+            os.close(binary_fd)
         worker_head, worker_committed = normalize_worker_git(
             worktree, base_head, refs_before, worker_env
         )
@@ -639,6 +686,9 @@ def run_worker(
             "kept": True,
         })
         return receipt
+
+    if binary_fd is not None:
+        os.close(binary_fd)
 
     worker_head, worker_committed = normalize_worker_git(
         worktree, base_head, refs_before, worker_env

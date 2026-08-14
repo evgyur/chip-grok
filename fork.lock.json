@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/evgyur/grok-build",
+  "tag": null,
+  "version": null,
+  "binary_path": "grok",
+  "fork_commit": null,
+  "upstream_commit": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+  "upstream_source_rev": "e6a67a5408288c98380cd13f3b1fe1fbc01c9f1f",
+  "platform": "linux-x86_64",
+  "sha256": null
+}

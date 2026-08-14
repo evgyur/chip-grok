@@ -60,24 +60,26 @@ If the task is missing, return:
 
 ## Runtime configuration
 
-Default command:
+Default executable and lock:
 
 ```bash
-grok -m "$CHIP_GROK_MODEL"
+$HOME/.local/lib/chip-grok/current/grok
+$HOME/.local/lib/chip-grok/current/fork.lock.json
 ```
 
 Supported environment variables:
 
-- `CHIP_GROK_BIN` — Grok executable or a trusted local wrapper; default `grok`.
-- `CHIP_GROK_MODEL` — configured Grok model alias; required unless the wrapper selects one.
+- `CHIP_GROK_BIN` — optional direct candidate executable; requires a matching `CHIP_GROK_LOCK_FILE`. Wrappers are rejected in verified mode.
+- `CHIP_GROK_LOCK_FILE` — optional candidate lock; default is the active lock beside the installed binary.
+- `CHIP_GROK_MODEL` — configured Grok model alias.
 - `CHIP_GROK_WORKTREE_ROOT` — worktree parent; default `$TMPDIR/chip-grok-worktrees`.
 - `CHIP_GROK_MAX_TURNS` — bounded agent turns; default `60`.
 - `CHIP_GROK_TIMEOUT` — process timeout in seconds; default `1800`.
 - `CHIP_GROK_PASSTHROUGH_ENV` — comma-separated names of the scoped provider variables Grok needs. All unrelated parent-process secrets are removed from the worker environment.
 
-Credentials stay in provider-specific environment variables or the local wrapper. Never place them in this repository, prompts, transcripts, or reports.
+Credentials stay in provider-specific environment variables. Never place them in this repository, prompts, transcripts, or reports.
 
-See [portable setup](references/portable-setup.md) for OpenAI-compatible model configuration and [Hermes adapter](references/hermes-adapter.md) for `/grok` alias installation.
+See [portable setup](references/portable-setup.md) for model configuration, [Hermes adapter](references/hermes-adapter.md) for `/grok`, and [downstream fork maintenance](references/upstream-sync.md) for replay, verification, activation, and rollback.
 
 ## Safety boundaries
 
