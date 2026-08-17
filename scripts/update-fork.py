@@ -334,8 +334,13 @@ def resume_verified_artifacts(
 ) -> tuple[Path, Path, dict[str, Any]]:
     binary = Path(str(report.get("binary", "")))
     lock_path = binary.parent / "fork.lock.json"
-    if not binary.is_file() or not lock_path.is_file():
-        raise SyncError("preserved verified candidate is missing its binary or lock")
+    if not binary.is_file():
+        raise SyncError("preserved verified candidate is missing its binary")
+    if not lock_path.is_file():
+        preserved_lock = report.get("lock")
+        if not isinstance(preserved_lock, dict):
+            raise SyncError("preserved verified candidate is missing its lock")
+        atomic_json(lock_path, preserved_lock)
     try:
         lock = json.loads(lock_path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
