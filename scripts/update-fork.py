@@ -22,6 +22,8 @@ from typing import Any
 
 UPSTREAM_URL = "https://github.com/xai-org/grok-build.git"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+GITHUB_SSH_REMOTE = re.compile(r"^git@github\.com:(?P<slug>[^/]+/[^/]+?)(?:\.git)?$")
+GITHUB_HTTPS_REMOTE = re.compile(r"^https://github\.com/(?P<slug>[^/]+/[^/]+?)(?:\.git)?/?$")
 
 
 class SyncError(RuntimeError):
@@ -74,6 +76,14 @@ def sha256(path: Path) -> str:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def canonical_repository_url(url: str) -> str:
+    for pattern in (GITHUB_SSH_REMOTE, GITHUB_HTTPS_REMOTE):
+        match = pattern.fullmatch(url.strip())
+        if match:
+            return f"https://github.com/{match.group('slug')}"
+    return url.strip().removesuffix(".git")
 
 
 def ensure_remote(repo: Path, name: str, url: str) -> None:
@@ -279,7 +289,7 @@ def verify_and_build(report: dict[str, Any], state_root: Path) -> tuple[Path, Pa
     tag = f"chip-v{safe_version}.{upstream_head[:7]}.{fork_head[:7]}"
     lock = {
         "schema": 1,
-        "repository": report["fork_url"],
+        "repository": canonical_repository_url(report["fork_url"]),
         "tag": tag,
         "version": raw_version,
         "binary_path": "grok",

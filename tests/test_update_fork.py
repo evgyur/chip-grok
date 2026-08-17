@@ -33,6 +33,12 @@ def git(repo: Path, *args: str) -> str:
 
 
 class UpdateForkTests(unittest.TestCase):
+    def test_repository_urls_are_canonicalized_for_the_runtime_lock(self) -> None:
+        updater = load_updater()
+        expected = "https://github.com/evgyur/grok-build"
+        self.assertEqual(updater.canonical_repository_url(expected + ".git"), expected)
+        self.assertEqual(updater.canonical_repository_url("git@github.com:evgyur/grok-build.git"), expected)
+
     def fixture(self, root: Path, *, conflict: bool = False) -> tuple[Path, Path, Path]:
         upstream = root / "upstream"
         upstream.mkdir()
