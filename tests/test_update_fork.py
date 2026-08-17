@@ -120,6 +120,11 @@ class UpdateForkTests(unittest.TestCase):
             self.assertEqual((candidate / "patch.txt").read_text(), "chip patch\n")
             self.assertEqual((candidate / "upstream.txt").read_text(), "v2\n")
 
+            resumed = self.invoke(source, root / "state")
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertIn("CANDIDATE_READY", resumed.stdout)
+            self.assertEqual(git(candidate, "rev-parse", "HEAD"), report["candidate_head"])
+
     def test_conflict_preserves_candidate_and_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -137,7 +137,30 @@ def prepare_candidate(source: dict[str, Any], state_root: Path) -> dict[str, Any
     upstream_head = source["upstream_head"]
     candidate = state_root / "candidates" / upstream_head[:12]
     if candidate.exists():
-        raise SyncError(f"candidate already exists and was preserved: {candidate}")
+        report_path = candidate / ".chip-sync-report.json"
+        try:
+            report = json.loads(report_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SyncError(f"candidate already exists without a valid resumable report: {candidate}") from exc
+        for key in ("fork_url", "upstream_url", "fork_head", "upstream_head", "old_upstream", "patch_commits"):
+            if report.get(key) != source[key]:
+                raise SyncError(f"preserved candidate no longer matches source identity: {key}")
+        if report.get("candidate") != str(candidate):
+            raise SyncError("preserved candidate path does not match its report")
+        if report.get("status") == "conflict":
+            return report
+        if report.get("status") not in {"candidate_ready", "verified", "smoke_passed"}:
+            raise SyncError("preserved candidate is not in a resumable state")
+        candidate_head = report.get("candidate_head", "")
+        if not HEX40.fullmatch(candidate_head) or git(candidate, "rev-parse", "HEAD") != candidate_head:
+            raise SyncError("preserved candidate HEAD does not match its report")
+        if git(candidate, "merge-base", "HEAD", "upstream/main") != upstream_head:
+            raise SyncError("preserved candidate is no longer based on the recorded upstream")
+        candidate_patches = git(candidate, "rev-list", "--reverse", "upstream/main..HEAD").splitlines()
+        if candidate_patches != report.get("candidate_patch_commits"):
+            raise SyncError("preserved candidate patch stack does not match its report")
+        report["resumed"] = True
+        return report
     candidate.parent.mkdir(parents=True, exist_ok=True)
     run(["git", "clone", "--quiet", "--no-checkout", source["fork_url"], str(candidate)])
     ensure_remote(candidate, "upstream", source["upstream_url"])
@@ -306,6 +329,36 @@ def verify_and_build(report: dict[str, Any], state_root: Path) -> tuple[Path, Pa
     return binary, lock_path, report
 
 
+def resume_verified_artifacts(
+    report: dict[str, Any], adapter_root: Path
+) -> tuple[Path, Path, dict[str, Any]]:
+    binary = Path(str(report.get("binary", "")))
+    lock_path = binary.parent / "fork.lock.json"
+    if not binary.is_file() or not lock_path.is_file():
+        raise SyncError("preserved verified candidate is missing its binary or lock")
+    try:
+        lock = json.loads(lock_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SyncError("preserved verified candidate lock is unreadable") from exc
+    canonical_repository = canonical_repository_url(str(lock.get("repository", "")))
+    if canonical_repository != lock.get("repository"):
+        lock["repository"] = canonical_repository
+        atomic_json(lock_path, lock)
+        report["lock"] = lock
+        atomic_json(Path(report["candidate"]) / ".chip-sync-report.json", report)
+    run(
+        [
+            "python3",
+            str(adapter_root / "scripts" / "verify-fork.py"),
+            "--binary",
+            str(binary),
+            "--lock",
+            str(lock_path),
+        ]
+    )
+    return binary, lock_path, report
+
+
 def h20_smoke(binary: Path, lock_path: Path, adapter_root: Path, state_root: Path) -> dict[str, Any]:
     smoke_root = Path(tempfile.mkdtemp(prefix="smoke-", dir=state_root))
     repo = smoke_root / "repo"
@@ -466,7 +519,10 @@ def main() -> int:
     binary: Path | None = None
     lock_path: Path | None = None
     if args.verify:
-        binary, lock_path, report = verify_and_build(report, args.state_root.resolve())
+        if report["status"] in {"verified", "smoke_passed"}:
+            binary, lock_path, report = resume_verified_artifacts(report, args.adapter_root.resolve())
+        else:
+            binary, lock_path, report = verify_and_build(report, args.state_root.resolve())
     if args.h20_smoke:
         if binary is None or lock_path is None:
             raise SyncError("verified binary and lock are unavailable")
