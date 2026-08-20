@@ -143,6 +143,48 @@ class UpdateForkTests(unittest.TestCase):
             self.assertEqual(report["conflicts"], ["shared.txt"])
             self.assertTrue(candidate.exists())
 
+    def test_fresh_verification_places_lock_beside_binary(self) -> None:
+        updater = load_updater()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = root / "candidate"
+            candidate.mkdir()
+            state = root / "state"
+            fork_head = "b" * 40
+            upstream_head = "c" * 40
+            report = {
+                "candidate": str(candidate),
+                "candidate_head": fork_head,
+                "upstream_head": upstream_head,
+                "fork_url": "https://github.com/evgyur/grok-build.git",
+            }
+
+            def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                binary = state / "artifacts" / fork_head / "grok"
+                if args and args[0] == "docker" and "CARGO_BUILD_JOBS=4" in args:
+                    binary.write_bytes(b"candidate binary")
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                if args and args[0] == str(binary):
+                    provenance = {
+                        "distribution": "chip",
+                        "version": "1.0.6",
+                        "fork_commit": fork_head,
+                        "upstream_commit": upstream_head,
+                        "upstream_source_rev": "d" * 40,
+                        "worker_contracts": [1],
+                        "auto_update": "externally-managed",
+                    }
+                    return subprocess.CompletedProcess(args, 0, json.dumps(provenance), "")
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+            with mock.patch.object(updater, "run", side_effect=fake_run):
+                binary, lock_path, verified = updater.verify_and_build(report, state)
+
+            self.assertEqual(lock_path, binary.parent / "fork.lock.json")
+            self.assertTrue(lock_path.is_file())
+            self.assertEqual(json.loads(lock_path.read_text()), verified["lock"])
+            self.assertFalse((candidate / ".chip-fork.lock.json").exists())
+
     def test_publish_failure_rolls_active_release_back(self) -> None:
         updater = load_updater()
         with tempfile.TemporaryDirectory() as tmp:

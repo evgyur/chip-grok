@@ -322,7 +322,7 @@ def verify_and_build(report: dict[str, Any], state_root: Path) -> tuple[Path, Pa
         "platform": "linux-x86_64",
         "sha256": sha256(binary),
     }
-    lock_path = candidate / ".chip-fork.lock.json"
+    lock_path = binary.parent / "fork.lock.json"
     atomic_json(lock_path, lock)
     report = {**report, "status": "verified", "binary": str(binary), "lock": lock}
     atomic_json(candidate / ".chip-sync-report.json", report)
